@@ -5,14 +5,14 @@ from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 from rltorch.memory import MultiStepMemory, PrioritizedMemory
 
-from model import TwinnedQNetwork, GaussianPolicy
-from utils import grad_false, hard_update, soft_update, to_batch,\
+from .model import TwinnedQNetwork, GaussianPolicy
+from .utils import grad_false, hard_update, soft_update, to_batch,\
     update_params, RunningMeanStats
 
 
 class SacAgent:
 
-    def __init__(self, env, log_dir, num_steps=3000000, batch_size=256,
+    def __init__(self, env, log_dir, wandb_writer, num_steps=3000000, batch_size=256,
                  lr=0.0003, hidden_units=[256, 256], memory_size=1e6,
                  gamma=0.99, tau=0.005, entropy_tuning=True, ent_coef=0.2,
                  multi_step=1, per=False, alpha=0.6, beta=0.4,
@@ -81,13 +81,10 @@ class SacAgent:
 
         self.log_dir = log_dir
         self.model_dir = os.path.join(log_dir, 'model')
-        self.summary_dir = os.path.join(log_dir, 'summary')
         if not os.path.exists(self.model_dir):
             os.makedirs(self.model_dir)
-        if not os.path.exists(self.summary_dir):
-            os.makedirs(self.summary_dir)
 
-        self.writer = SummaryWriter(log_dir=self.summary_dir)
+        self.writer = wandb_writer
         self.train_rewards = RunningMeanStats(log_interval)
 
         self.steps = 0
@@ -206,8 +203,8 @@ class SacAgent:
         self.train_rewards.append(episode_reward)
 
         if self.episodes % self.log_interval == 0:
-            self.writer.add_scalar(
-                'reward/train', self.train_rewards.get(), self.steps)
+            self.writer.log({
+                'train reward': self.train_rewards.get()})
 
         print(f'episode: {self.episodes:<4}  '
               f'episode steps: {episode_steps:<4}  '
@@ -242,33 +239,22 @@ class SacAgent:
             entropy_loss = self.calc_entropy_loss(entropies, weights)
             update_params(self.alpha_optim, None, entropy_loss)
             self.alpha = self.log_alpha.exp()
-            self.writer.add_scalar(
-                'loss/alpha', entropy_loss.detach().item(), self.steps)
+            self.writer.log({
+                'alpha loss': entropy_loss.detach().item()})
 
         if self.per:
             # update priority weights
             self.memory.update_priority(indices, errors.cpu().numpy())
 
         if self.learning_steps % self.log_interval == 0:
-            self.writer.add_scalar(
-                'loss/Q1', q1_loss.detach().item(),
-                self.learning_steps)
-            self.writer.add_scalar(
-                'loss/Q2', q2_loss.detach().item(),
-                self.learning_steps)
-            self.writer.add_scalar(
-                'loss/policy', policy_loss.detach().item(),
-                self.learning_steps)
-            self.writer.add_scalar(
-                'stats/alpha', self.alpha.detach().item(),
-                self.learning_steps)
-            self.writer.add_scalar(
-                'stats/mean_Q1', mean_q1, self.learning_steps)
-            self.writer.add_scalar(
-                'stats/mean_Q2', mean_q2, self.learning_steps)
-            self.writer.add_scalar(
-                'stats/entropy', entropies.detach().mean().item(),
-                self.learning_steps)
+            self.writer.log({
+                'Q1 loss': q1_loss.detach().item(),
+                'Q2 loss': q2_loss.detach().item(),
+                'Policy loss': policy_loss.detach().item(),
+                'Alpha': self.alpha.detach().item(),
+                'Q1 Mean': mean_q1,
+                'Q2 Mean': mean_q2,
+                'Entropy': entropies.detach().mean().item()})
 
     def calc_critic_loss(self, batch, weights):
         curr_q1, curr_q2 = self.calc_current_q(*batch)
@@ -324,8 +310,8 @@ class SacAgent:
 
         mean_return = np.mean(returns)
 
-        self.writer.add_scalar(
-            'reward/test', mean_return, self.steps)
+        self.writer.log({
+            'Test Reward': mean_return})
         print('-' * 60)
         print(f'Num steps: {self.steps:<5}  '
               f'reward: {mean_return:<5.1f}')
@@ -338,5 +324,4 @@ class SacAgent:
             os.path.join(self.model_dir, 'critic_target.pth'))
 
     def __del__(self):
-        self.writer.close()
         self.env.close()

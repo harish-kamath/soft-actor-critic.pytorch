@@ -5,8 +5,8 @@ import torch
 import gym
 from gym import wrappers
 
-from model import GaussianPolicy
-from utils import grad_false
+from .model import GaussianPolicy
+from .utils import grad_false
 
 
 def run():

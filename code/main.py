@@ -3,10 +3,10 @@ import argparse
 from datetime import datetime
 import gym
 
-from agent import SacAgent
+from .agent import SacAgent
 
 
-def run():
+def train_sac(env, wandb_writer, configs=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--env_id', type=str, default='HalfCheetah-v2')
     parser.add_argument('--cuda', action='store_true')
@@ -39,15 +39,10 @@ def run():
         'seed': args.seed
     }
 
-    env = gym.make(args.env_id)
-
     log_dir = os.path.join(
         'logs', args.env_id,
         f'sac-seed{args.seed}-{datetime.now().strftime("%Y%m%d-%H%M")}')
 
-    agent = SacAgent(env=env, log_dir=log_dir, **configs)
+    agent = SacAgent(env=env, log_dir=log_dir, wandb_writer = wandb_writer, **configs)
     agent.run()
-
-
-if __name__ == '__main__':
-    run()
+    return agent

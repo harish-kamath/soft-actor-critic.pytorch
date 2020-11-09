@@ -18,7 +18,7 @@ class SacAgent:
                  multi_step=1, per=False, alpha=0.6, beta=0.4,
                  beta_annealing=0.0001, grad_clip=None, updates_per_step=1,
                  start_steps=10000, log_interval=10, target_update_interval=1,
-                 eval_interval=1000, cuda=True, seed=0):
+                 eval_interval=1000, cuda=True, seed=0, **kwargs):
         self.env = env
 
         torch.manual_seed(seed)

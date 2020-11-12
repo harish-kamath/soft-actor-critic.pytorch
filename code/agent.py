@@ -164,7 +164,7 @@ class SacAgent:
 
             # ignore done if the agent reach time horizons
             # (set done=True only when the agent fails)
-            if episode_steps >= self.env._max_episode_steps:
+            if episode_steps == self.env._max_episode_steps:
                 masked_done = False
             else:
                 masked_done = done
@@ -322,6 +322,12 @@ class SacAgent:
         self.critic.save(os.path.join(self.model_dir, 'critic.pth'))
         self.critic_target.save(
             os.path.join(self.model_dir, 'critic_target.pth'))
+
+    def load_models(self, model_dir):
+        self.policy.save(os.path.join(model_dir, 'policy.pth'))
+        self.critic.save(os.path.join(model_dir, 'critic.pth'))
+        self.critic_target.save(
+            os.path.join(model_dir, 'critic_target.pth'))
 
     def __del__(self):
         self.env.close()

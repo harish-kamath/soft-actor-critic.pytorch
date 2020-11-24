@@ -4,10 +4,12 @@ import torch
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 from rltorch.memory import MultiStepMemory, PrioritizedMemory
+import time
 
 from .model import TwinnedQNetwork, GaussianPolicy
 from .utils import grad_false, hard_update, soft_update, to_batch,\
     update_params, RunningMeanStats
+from ...utils import EarlyStopping
 
 
 class SacAgent:
@@ -18,7 +20,7 @@ class SacAgent:
                  multi_step=1, per=False, alpha=0.6, beta=0.4,
                  beta_annealing=0.0001, grad_clip=None, updates_per_step=1,
                  start_steps=10000, log_interval=10, target_update_interval=1,
-                 eval_interval=1000, cuda=True, seed=0, **kwargs):
+                 eval_interval=1000, cuda=True, seed=0, es=False, es_patience=5000, es_delta=3, **kwargs):
         self.env = env
 
         torch.manual_seed(seed)
@@ -33,7 +35,8 @@ class SacAgent:
         self.policy = GaussianPolicy(
             self.env.observation_space.shape[0],
             self.env.action_space.shape[0],
-            hidden_units=hidden_units).to(self.device)
+            hidden_units=hidden_units,
+            device=self.device).to(self.device)
         self.critic = TwinnedQNetwork(
             self.env.observation_space.shape[0],
             self.env.action_space.shape[0],
@@ -102,16 +105,27 @@ class SacAgent:
         self.log_interval = log_interval
         self.target_update_interval = target_update_interval
         self.eval_interval = eval_interval
+        self.es=None
+        if es:
+            self.es = EarlyStopping(patience=es_patience, delta=es_delta, decreasing_is_better=True)
+        self.stop = False
 
     def run(self):
         while True:
             self.train_episode()
-            if self.steps > self.num_steps:
+            if (self.steps > self.num_steps) or self.stop:
+                if self.stop:
+                    print(f"Terminated SAC Training due to early stopping! Step {self.steps}")
+                self.stop = False
+                self.steps = 0
                 break
 
     def is_update(self):
         return len(self.memory) > self.batch_size and\
             self.steps >= self.start_steps
+    
+    def update_env(self, env):
+        self.env = env
 
     def act(self, state):
         if self.start_steps > self.steps:
@@ -154,7 +168,7 @@ class SacAgent:
         episode_steps = 0
         done = False
         state = self.env.reset()
-
+        start_time = time.time()
         while not done:
             action = self.act(state)
             next_state, reward, done, _ = self.env.step(action)
@@ -207,8 +221,9 @@ class SacAgent:
                 'train reward': self.train_rewards.get()})
 
         print(f'episode: {self.episodes:<4}  '
-              f'episode steps: {episode_steps:<4}  '
-              f'reward: {episode_reward:<5.1f}')
+              f'eps steps: {episode_steps:<4}  '
+              f'rew: {episode_reward:<5.1f}  '
+              f'time: {time.time() - start_time:<5.3}s')
 
     def learn(self):
         self.learning_steps += 1
@@ -255,6 +270,8 @@ class SacAgent:
                 'Q1 Mean': mean_q1,
                 'Q2 Mean': mean_q2,
                 'Entropy': entropies.detach().mean().item()})
+            if self.es:
+                self.stop = self.es(policy_loss.detach().item())
 
     def calc_critic_loss(self, batch, weights):
         curr_q1, curr_q2 = self.calc_current_q(*batch)
@@ -318,15 +335,17 @@ class SacAgent:
         print('-' * 60)
 
     def save_models(self):
+        print(f"Saving SAC Models to directory {self.model_dir}")
         self.policy.save(os.path.join(self.model_dir, 'policy.pth'))
         self.critic.save(os.path.join(self.model_dir, 'critic.pth'))
         self.critic_target.save(
             os.path.join(self.model_dir, 'critic_target.pth'))
 
     def load_models(self, model_dir):
-        self.policy.save(os.path.join(model_dir, 'policy.pth'))
-        self.critic.save(os.path.join(model_dir, 'critic.pth'))
-        self.critic_target.save(
+        print(f"Loading SAC Models from directory {model_dir}")
+        self.policy.load(os.path.join(model_dir, 'policy.pth'))
+        self.critic.load(os.path.join(model_dir, 'critic.pth'))
+        self.critic_target.load(
             os.path.join(model_dir, 'critic_target.pth'))
 
     def __del__(self):

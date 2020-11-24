@@ -51,13 +51,14 @@ class GaussianPolicy(BaseNetwork):
     eps = 1e-6
 
     def __init__(self, num_inputs, num_actions, hidden_units=[256, 256],
-                 initializer='xavier'):
+                 initializer='xavier',device=None):
         super(GaussianPolicy, self).__init__()
 
         # https://github.com/ku2482/rltorch/blob/master/rltorch/network/builder.py
         self.policy = create_linear_network(
             num_inputs, num_actions*2, hidden_units=hidden_units,
             initializer=initializer)
+        self.device = device
 
     def forward(self, states):
         mean, log_std = torch.chunk(self.policy(states), 2, dim=-1)
@@ -80,3 +81,17 @@ class GaussianPolicy(BaseNetwork):
         entropies = -log_probs.sum(dim=1, keepdim=True)
 
         return actions, entropies, torch.tanh(means)
+    
+    def exploit(self, state):
+        # act without randomness
+        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            _, _, action = self.sample(state)
+        return action.cpu().numpy().reshape(-1)
+
+    def explore(self, state):
+        # act with randomness
+        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            action, _, _ = self.sample(state)
+        return action.cpu().numpy().reshape(-1)

@@ -20,7 +20,7 @@ class SacAgent:
                  multi_step=1, per=False, alpha=0.6, beta=0.4,
                  beta_annealing=0.0001, grad_clip=None, updates_per_step=1,
                  start_steps=10000, log_interval=10, target_update_interval=1,
-                 eval_interval=1000, cuda=True, seed=0, es=False, es_patience=5000, es_delta=3, **kwargs):
+                 eval_interval=1000, cuda=True, seed=0, es=False, es_patience=5000, es_delta=3, critic_ensemble=2, **kwargs):
         self.env = env
 
         torch.manual_seed(seed)
@@ -40,11 +40,18 @@ class SacAgent:
         self.critic = TwinnedQNetwork(
             self.env.observation_space.shape[0],
             self.env.action_space.shape[0],
-            hidden_units=hidden_units).to(self.device)
+            num_ensemble=critic_ensemble,
+            hidden_units=hidden_units)
         self.critic_target = TwinnedQNetwork(
             self.env.observation_space.shape[0],
             self.env.action_space.shape[0],
-            hidden_units=hidden_units).to(self.device).eval()
+            num_ensemble=critic_ensemble,
+            hidden_units=hidden_units)
+        
+        for qnets in self.critic.Q:
+            qnets.to(self.device)
+        for qnets in self.critic_target.Q:
+            qnets.to(self.device)
 
         # copy parameters of the learning network to the target network
         hard_update(self.critic_target, self.critic)
@@ -52,8 +59,7 @@ class SacAgent:
         grad_false(self.critic_target)
 
         self.policy_optim = Adam(self.policy.parameters(), lr=lr)
-        self.q1_optim = Adam(self.critic.Q1.parameters(), lr=lr)
-        self.q2_optim = Adam(self.critic.Q2.parameters(), lr=lr)
+        self.q_optims = [Adam(q_network.parameters(), lr=lr) for q_network in self.critic.Q]
 
         if entropy_tuning:
             # Target entropy is -|A|.
@@ -149,14 +155,16 @@ class SacAgent:
         return action.cpu().numpy().reshape(-1)
 
     def calc_current_q(self, states, actions, rewards, next_states, dones):
-        curr_q1, curr_q2 = self.critic(states, actions)
-        return curr_q1, curr_q2
+        return self.critic(states, actions)
 
     def calc_target_q(self, states, actions, rewards, next_states, dones):
         with torch.no_grad():
             next_actions, next_entropies, _ = self.policy.sample(next_states)
-            next_q1, next_q2 = self.critic_target(next_states, next_actions)
-            next_q = torch.min(next_q1, next_q2) + self.alpha * next_entropies
+            qvals = self.critic_target(next_states, next_actions)
+            qval = qvals[0]
+            for q in qvals:
+                qval = torch.min(qval,q)
+            next_q = qval + self.alpha * next_entropies
 
         target_q = rewards + (1.0 - dones) * self.gamma_n * next_q
 
@@ -188,9 +196,9 @@ class SacAgent:
                     state, action, reward, next_state, masked_done,
                     self.device)
                 with torch.no_grad():
-                    curr_q1, curr_q2 = self.calc_current_q(*batch)
+                    qvals = self.calc_current_q(*batch)
                 target_q = self.calc_target_q(*batch)
-                error = torch.abs(curr_q1 - target_q).item()
+                error = torch.abs(qvals[0] - target_q).item()
                 # We need to give true done signal with addition to masked done
                 # signal to calculate multi-step rewards.
                 self.memory.append(
@@ -239,14 +247,13 @@ class SacAgent:
             # set priority weights to 1 when we don't use PER.
             weights = 1.
 
-        q1_loss, q2_loss, errors, mean_q1, mean_q2 =\
+        q_losses, errors, mean_qs =\
             self.calc_critic_loss(batch, weights)
         policy_loss, entropies = self.calc_policy_loss(batch, weights)
 
-        update_params(
-            self.q1_optim, self.critic.Q1, q1_loss, self.grad_clip)
-        update_params(
-            self.q2_optim, self.critic.Q2, q2_loss, self.grad_clip)
+        for i, q_optim in enumerate(self.q_optims):
+            update_params(q_optim, self.critic.Q[i], q_losses[i], self.grad_clip)
+        
         update_params(
             self.policy_optim, self.policy, policy_loss, self.grad_clip)
 
@@ -263,30 +270,26 @@ class SacAgent:
 
         if self.learning_steps % self.log_interval == 0:
             self.writer.log({
-                'Q1 loss': q1_loss.detach().item(),
-                'Q2 loss': q2_loss.detach().item(),
+                'Mean Q loss': np.mean([q_loss.detach().item() for q_loss in q_losses]),
                 'Policy loss': policy_loss.detach().item(),
                 'Alpha': self.alpha.detach().item(),
-                'Q1 Mean': mean_q1,
-                'Q2 Mean': mean_q2,
+                'Mean Q Value': np.mean(mean_qs),
                 'Entropy': entropies.detach().mean().item()})
             if self.es:
                 self.stop = self.es(policy_loss.detach().item())
 
     def calc_critic_loss(self, batch, weights):
-        curr_q1, curr_q2 = self.calc_current_q(*batch)
+        qvals = self.calc_current_q(*batch)
         target_q = self.calc_target_q(*batch)
 
         # TD errors for updating priority weights
-        errors = torch.abs(curr_q1.detach() - target_q)
+        errors = torch.abs(qvals[0].detach() - target_q)
         # We log means of Q to monitor training.
-        mean_q1 = curr_q1.detach().mean().item()
-        mean_q2 = curr_q2.detach().mean().item()
+        mean_qs = [qval.detach().mean().item() for qval in qvals]
 
         # Critic loss is mean squared TD errors with priority weights.
-        q1_loss = torch.mean((curr_q1 - target_q).pow(2) * weights)
-        q2_loss = torch.mean((curr_q2 - target_q).pow(2) * weights)
-        return q1_loss, q2_loss, errors, mean_q1, mean_q2
+        q_losses = [torch.mean((qval - target_q).pow(2) * weights) for qval in qvals]
+        return q_losses, errors, mean_qs
 
     def calc_policy_loss(self, batch, weights):
         states, actions, rewards, next_states, dones = batch
@@ -294,8 +297,10 @@ class SacAgent:
         # We re-sample actions to calculate expectations of Q.
         sampled_action, entropy, _ = self.policy.sample(states)
         # expectations of Q with clipped double Q technique
-        q1, q2 = self.critic(states, sampled_action)
-        q = torch.min(q1, q2)
+        qvals= self.critic(states, sampled_action)
+        q = qvals[0]
+        for qval in qvals:
+            q = torch.min(q,qval)
 
         # Policy objective is maximization of (Q + alpha * entropy) with
         # priority weights.

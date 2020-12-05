@@ -29,20 +29,18 @@ class QNetwork(BaseNetwork):
 
 class TwinnedQNetwork(BaseNetwork):
 
-    def __init__(self, num_inputs, num_actions, hidden_units=[256, 256],
+    def __init__(self, num_inputs, num_actions, num_ensemble=2, hidden_units=[256, 256],
                  initializer='xavier'):
         super(TwinnedQNetwork, self).__init__()
 
-        self.Q1 = QNetwork(
-            num_inputs, num_actions, hidden_units, initializer)
-        self.Q2 = QNetwork(
-            num_inputs, num_actions, hidden_units, initializer)
+        for i in range(num_ensemble):
+            setattr(self, f'Q{i}', QNetwork(num_inputs, num_actions, hidden_units, initializer))
+
+        self.Q = [getattr(self,f'Q{i}') for i in range(num_ensemble)]
 
     def forward(self, states, actions):
         x = torch.cat([states, actions], dim=1)
-        q1 = self.Q1(x)
-        q2 = self.Q2(x)
-        return q1, q2
+        return [q_network(x) for q_network in self.Q]
 
 
 class GaussianPolicy(BaseNetwork):
